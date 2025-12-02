@@ -7,7 +7,7 @@
 
 import { WebSocketServer, WebSocket } from 'ws'
 
-const PORT = 3001
+const PORT = process.env.PORT || 3001
 const wss = new WebSocketServer({ port: PORT })
 
 // 房间管理

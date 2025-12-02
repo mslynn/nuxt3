@@ -261,8 +261,9 @@ const role = (route.query.role as string) || 'student'
 const userName = (route.query.name as string) || '匿名用户'
 const isTeacher = computed(() => role === 'teacher')
 
-// WebSocket
-const WS_URL = 'ws://127.0.0.1:3001'
+// WebSocket - 生产环境使用环境变量，本地开发使用 localhost
+const config = useRuntimeConfig()
+const WS_URL = config.public.wsUrl || 'ws://127.0.0.1:3001'
 const ws = ref<WebSocket | null>(null)
 
 // 状态

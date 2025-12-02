@@ -45,6 +45,7 @@ export default defineNuxtConfig({
     // 客户端也可用
     public: {
       apiBase: '', // 留空则使用相对路径，生产环境可设置为 'https://api.example.com'
+      wsUrl: '', // WebSocket 服务器地址，生产环境设置为 'wss://your-ws-server.railway.app'
     }
   },
 
