@@ -100,6 +100,7 @@ function handleMessage(ws, data) {
       break
 
     case 'screen-share-started':
+      console.log(`📺 ${user.name} 开始屏幕共享`)
       broadcastToRoom(user.roomId, {
         type: 'screen-share-started',
         payload: { from: user.odid, name: user.name }
@@ -107,6 +108,7 @@ function handleMessage(ws, data) {
       break
 
     case 'screen-share-stopped':
+      console.log(`📺 ${user.name} 停止屏幕共享`)
       broadcastToRoom(user.roomId, {
         type: 'screen-share-stopped',
         payload: { from: user.odid }
@@ -150,12 +152,48 @@ function handleMessage(ws, data) {
 
     case 'focus-status':
       // 学生上报焦点状态
+      console.log(`👁️ ${user.name} 焦点状态: ${payload.isFocused ? '专注' : '未聚焦'}`)
       broadcastToTeachers(user.roomId, {
         type: 'focus-status',
         payload: {
           studentId: user.odid,
           studentName: user.name,
           isFocused: payload.isFocused
+        }
+      })
+      break
+
+    case 'webrtc-offer':
+      // 老师发送 offer 给学生
+      console.log(`🔗 转发 WebRTC offer: ${user.name} -> ${payload.targetId}`)
+      sendToUser(payload.targetId, {
+        type: 'webrtc-offer',
+        payload: {
+          from: user.odid,
+          offer: payload.offer
+        }
+      })
+      break
+
+    case 'webrtc-answer':
+      // 学生发送 answer 给老师
+      console.log(`🔗 转发 WebRTC answer: ${user.name} -> ${payload.targetId}`)
+      sendToUser(payload.targetId, {
+        type: 'webrtc-answer',
+        payload: {
+          from: user.odid,
+          answer: payload.answer
+        }
+      })
+      break
+
+    case 'webrtc-ice-candidate':
+      // 转发 ICE candidate
+      sendToUser(payload.targetId, {
+        type: 'webrtc-ice-candidate',
+        payload: {
+          from: user.odid,
+          candidate: payload.candidate
         }
       })
       break
@@ -247,13 +285,21 @@ function send(ws, data) {
 
 function broadcastToRoom(roomId, data, exclude = null) {
   const room = rooms.get(roomId)
-  if (!room) return
+  if (!room) {
+    console.log(`⚠️ 房间 ${roomId} 不存在，无法广播`)
+    return
+  }
 
+  let sentCount = 0
   room.forEach((client) => {
     if (client !== exclude) {
+      const user = users.get(client)
+      console.log(`📤 发送 ${data.type} 给 ${user?.name || '未知用户'}`)
       send(client, data)
+      sentCount++
     }
   })
+  console.log(`📢 广播 ${data.type} 到房间 ${roomId}，发送给 ${sentCount} 人`)
 }
 
 function broadcastToStudents(roomId, data) {

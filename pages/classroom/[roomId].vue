@@ -126,13 +126,33 @@
 
           <!-- 屏幕共享视图 -->
           <div v-show="currentView === 'screen'" class="w-full h-full flex items-center justify-center">
+            <!-- 老师端：显示自己的屏幕共享 -->
             <ClassroomVideoPlayer
-              v-if="screenShareStream"
+              v-if="isTeacher && screenShareStream"
               :stream="screenShareStream"
-              :name="isTeacher ? '我的屏幕' : '老师的屏幕'"
+              name="我的屏幕"
               :is-screen-share="true"
               class="w-full h-full"
             />
+            <!-- 学生端：显示老师的屏幕共享 -->
+            <ClassroomVideoPlayer
+              v-else-if="!isTeacher && remoteScreenStream"
+              :stream="remoteScreenStream"
+              name="老师的屏幕"
+              :is-screen-share="true"
+              class="w-full h-full"
+            />
+            <!-- 学生端：等待接收屏幕流 -->
+            <div v-else-if="!isTeacher && teacherScreenSharing && !remoteScreenStream" class="text-center">
+              <div class="w-32 h-32 mx-auto mb-6 bg-green-600/20 rounded-full flex items-center justify-center">
+                <svg class="w-16 h-16 text-green-400 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+              </div>
+              <p class="text-xl text-white mb-2">正在连接老师的屏幕...</p>
+              <p class="text-slate-400 text-sm">请稍候，正在建立 WebRTC 连接</p>
+            </div>
+            <!-- 无屏幕共享时 -->
             <div v-else class="text-center text-slate-500">
               <svg class="w-24 h-24 mx-auto mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
@@ -242,7 +262,8 @@ const userName = (route.query.name as string) || '匿名用户'
 const isTeacher = computed(() => role === 'teacher')
 
 // WebSocket
-const wsUrl = ref('') // 需要配置实际的 WebSocket 服务器地址
+const WS_URL = 'ws://127.0.0.1:3001'
+const ws = ref<WebSocket | null>(null)
 
 // 状态
 const isConnected = ref(false)
@@ -260,6 +281,19 @@ const isCameraOn = ref(false)
 const isMicOn = ref(false)
 const isScreenSharing = ref(false)
 const isScreenLocked = ref(false)
+const teacherScreenSharing = ref(false) // 学生端：老师是否在共享屏幕
+
+// WebRTC - 屏幕共享
+const peerConnections = ref<Map<string, RTCPeerConnection>>(new Map())
+const remoteScreenStream = ref<MediaStream | null>(null) // 学生端：接收老师的屏幕共享流
+
+// ICE 服务器配置
+const iceServers: RTCConfiguration = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
+}
 
 // 参与者和消息
 const participants = ref<Array<{ id: string; name: string; role: string }>>([])
@@ -282,28 +316,175 @@ const studentsList = ref<Array<{
 // 组件引用
 const whiteboardRef = ref<any>(null)
 
-// 模拟数据（实际应该从 WebSocket 获取）
+// WebSocket 消息发送
+const wsSend = (type: string, payload: any = {}) => {
+  if (ws.value && ws.value.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ type, payload }))
+  }
+}
+
+// WebSocket 消息处理
+const handleWsMessage = (event: MessageEvent) => {
+  try {
+    const data = JSON.parse(event.data)
+    const { type, payload } = data
+    
+    // 调试：打印所有收到的消息
+    console.log('📩 收到消息:', type, payload)
+
+    switch (type) {
+      case 'room-joined':
+        userId.value = payload.odid
+        participants.value = payload.participants || []
+        // 更新学生列表
+        updateStudentsList()
+        break
+
+      case 'user-joined':
+        participants.value.push(payload.user)
+        updateStudentsList()
+        break
+
+      case 'user-left':
+        participants.value = participants.value.filter(p => p.id !== payload.odid)
+        updateStudentsList()
+        break
+
+      case 'chat-message':
+        chatMessages.value.push({
+          from: payload.from,
+          fromName: payload.fromName,
+          content: payload.content,
+          time: new Date(payload.time),
+          isTeacher: payload.isTeacher
+        })
+        break
+
+      case 'whiteboard-draw':
+        if (whiteboardRef.value && payload.from !== odid.value) {
+          whiteboardRef.value.applyRemoteDraw(payload)
+        }
+        break
+
+      case 'whiteboard-clear':
+        if (whiteboardRef.value && payload.from !== odid.value) {
+          whiteboardRef.value.applyClear()
+        }
+        break
+
+      case 'lock-screen':
+        isScreenLocked.value = true
+        break
+
+      case 'unlock-screen':
+        isScreenLocked.value = false
+        break
+
+      case 'focus-status':
+        // 更新学生焦点状态
+        const student = studentsList.value.find(s => s.id === payload.studentId)
+        if (student) {
+          student.isFocused = payload.isFocused
+        }
+        break
+
+      case 'screen-share-started':
+        // 老师开始屏幕共享（学生端收到通知）
+        console.log('📺 收到屏幕共享开始通知', payload)
+        if (!isTeacher.value) {
+          teacherScreenSharing.value = true
+          currentView.value = 'screen'
+          console.log('📺 学生端：老师开始屏幕共享')
+        }
+        break
+
+      case 'screen-share-stopped':
+        // 老师停止屏幕共享
+        console.log('📺 收到屏幕共享停止通知', payload)
+        if (!isTeacher.value) {
+          teacherScreenSharing.value = false
+          remoteScreenStream.value = null
+          // 关闭 PeerConnection
+          peerConnections.value.forEach(pc => pc.close())
+          peerConnections.value.clear()
+          console.log('📺 学生端：老师停止屏幕共享')
+        }
+        break
+
+      case 'webrtc-offer':
+        // 学生端收到老师的 offer
+        if (!isTeacher.value) {
+          console.log('🔗 收到 WebRTC offer')
+          handleWebRTCOffer(payload.from, payload.offer)
+        }
+        break
+
+      case 'webrtc-answer':
+        // 老师端收到学生的 answer
+        if (isTeacher.value) {
+          console.log('🔗 收到 WebRTC answer')
+          handleWebRTCAnswer(payload.from, payload.answer)
+        }
+        break
+
+      case 'webrtc-ice-candidate':
+        // 收到 ICE candidate
+        console.log('🔗 收到 ICE candidate')
+        handleICECandidate(payload.from, payload.candidate)
+        break
+    }
+  } catch (e) {
+    console.error('消息解析失败:', e)
+  }
+}
+
+// 更新学生列表（从参与者中筛选）
+const updateStudentsList = () => {
+  // 先保存旧的状态
+  const oldStudents = [...studentsList.value]
+  
+  studentsList.value = participants.value
+    .filter(p => p.role === 'student')
+    .map(p => {
+      const existingStudent = oldStudents.find(s => s.id === p.id)
+      return {
+        id: p.id,
+        name: p.name,
+        isFocused: existingStudent?.isFocused ?? true, // 默认为专注
+        isLocked: existingStudent?.isLocked ?? false
+      }
+    })
+}
+
+// 用户ID
+const odidValue = odid.value
+const userId = ref(odidValue)
+
 onMounted(async () => {
-  // 模拟连接成功
-  isConnected.value = true
+  // 连接 WebSocket
+  try {
+    ws.value = new WebSocket(WS_URL)
 
-  // 模拟一些参与者
-  participants.value = [
-    { id: odid.value, name: userName, role: role }
-  ]
+    ws.value.onopen = () => {
+      isConnected.value = true
+      console.log('✅ WebSocket 已连接')
+      // 加入房间
+      wsSend('join-room', { roomId, name: userName, role })
+    }
 
-  if (isTeacher.value) {
-    // 模拟一些学生
-    studentsList.value = [
-      { id: 's1', name: '张三', isFocused: true, isLocked: false },
-      { id: 's2', name: '李四', isFocused: true, isLocked: false },
-      { id: 's3', name: '王五', isFocused: false, isLocked: false }
-    ]
-    participants.value.push(
-      { id: 's1', name: '张三', role: 'student' },
-      { id: 's2', name: '李四', role: 'student' },
-      { id: 's3', name: '王五', role: 'student' }
-    )
+    ws.value.onclose = () => {
+      isConnected.value = false
+      console.log('❌ WebSocket 已断开')
+    }
+
+    ws.value.onerror = (error) => {
+      console.error('WebSocket 错误:', error)
+      isConnected.value = false
+    }
+
+    ws.value.onmessage = handleWsMessage
+  } catch (error) {
+    console.error('WebSocket 连接失败:', error)
   }
 
   // 尝试获取媒体流
@@ -319,15 +500,30 @@ onMounted(async () => {
     console.error('获取媒体设备失败:', error)
   }
 
-  // 监听页面焦点变化（学生端）
-  if (!isTeacher.value) {
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    window.addEventListener('blur', handleWindowBlur)
-    window.addEventListener('focus', handleWindowFocus)
-  }
+  // 监听页面焦点变化（学生端）- 暂时禁用调试
+  // if (!isTeacher.value) {
+  //   document.addEventListener('visibilitychange', handleVisibilityChange)
+  //   window.addEventListener('blur', handleWindowBlur)
+  //   window.addEventListener('focus', handleWindowFocus)
+  //   
+  //   // 初始化时发送焦点状态（延迟一下确保 WebSocket 已连接和加入房间）
+  //   setTimeout(() => {
+  //     const isFocused = document.hasFocus() && !document.hidden
+  //     console.log('📤 发送焦点状态:', isFocused)
+  //     wsSend('focus-status', { isFocused: true }) // 刚加入默认为专注
+  //   }, 2000)
+  // }
 })
 
 onUnmounted(() => {
+  // 离开房间
+  wsSend('leave-room', { roomId })
+
+  // 关闭 WebSocket
+  if (ws.value) {
+    ws.value.close()
+  }
+
   // 清理媒体流
   if (localStream.value) {
     localStream.value.getTracks().forEach(track => track.stop())
@@ -372,7 +568,11 @@ const toggleScreenShare = async () => {
       screenShareStream.value.getTracks().forEach(track => track.stop())
       screenShareStream.value = null
     }
+    // 关闭所有 PeerConnection
+    peerConnections.value.forEach(pc => pc.close())
+    peerConnections.value.clear()
     isScreenSharing.value = false
+    wsSend('screen-share-stopped', {})
   } else {
     // 开始屏幕共享
     try {
@@ -383,11 +583,22 @@ const toggleScreenShare = async () => {
       screenShareStream.value = stream
       isScreenSharing.value = true
       currentView.value = 'screen'
+      console.log('📺 老师端：发送屏幕共享开始通知')
+      wsSend('screen-share-started', {})
+
+      // 为每个学生创建 WebRTC 连接
+      const students = participants.value.filter(p => p.role === 'student')
+      for (const student of students) {
+        await createOfferForStudent(student.id, stream)
+      }
 
       // 监听停止
       stream.getVideoTracks()[0].onended = () => {
         screenShareStream.value = null
+        peerConnections.value.forEach(pc => pc.close())
+        peerConnections.value.clear()
         isScreenSharing.value = false
+        wsSend('screen-share-stopped', {})
       }
     } catch (error) {
       console.error('屏幕共享失败:', error)
@@ -395,19 +606,129 @@ const toggleScreenShare = async () => {
   }
 }
 
+// WebRTC: 老师为学生创建 offer
+const createOfferForStudent = async (studentId: string, stream: MediaStream) => {
+  console.log('🔗 为学生创建 WebRTC 连接:', studentId)
+  
+  const pc = new RTCPeerConnection(iceServers)
+  peerConnections.value.set(studentId, pc)
+
+  // 添加屏幕共享流
+  stream.getTracks().forEach(track => {
+    pc.addTrack(track, stream)
+  })
+
+  // ICE candidate
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      wsSend('webrtc-ice-candidate', {
+        targetId: studentId,
+        candidate: event.candidate.toJSON()
+      })
+    }
+  }
+
+  // 创建并发送 offer
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+  
+  wsSend('webrtc-offer', {
+    targetId: studentId,
+    offer: {
+      type: offer.type,
+      sdp: offer.sdp
+    }
+  })
+  console.log('📤 发送 WebRTC offer 给学生:', studentId)
+}
+
+// WebRTC: 学生处理 offer 并发送 answer
+const handleWebRTCOffer = async (teacherId: string, offer: RTCSessionDescriptionInit) => {
+  console.log('🔗 学生处理 WebRTC offer, teacherId:', teacherId)
+  
+  const pc = new RTCPeerConnection(iceServers)
+  peerConnections.value.set(teacherId, pc)
+
+  // 连接状态变化
+  pc.onconnectionstatechange = () => {
+    console.log('🔗 连接状态:', pc.connectionState)
+  }
+
+  pc.oniceconnectionstatechange = () => {
+    console.log('🔗 ICE 连接状态:', pc.iceConnectionState)
+  }
+
+  // 接收远程流
+  pc.ontrack = (event) => {
+    console.log('📥 收到远程视频流!', event.streams)
+    if (event.streams && event.streams[0]) {
+      remoteScreenStream.value = event.streams[0]
+      console.log('✅ 远程流已设置')
+    }
+  }
+
+  // ICE candidate
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      console.log('📤 发送 ICE candidate')
+      wsSend('webrtc-ice-candidate', {
+        targetId: teacherId,
+        candidate: event.candidate.toJSON()
+      })
+    }
+  }
+
+  try {
+    // 设置远程描述并创建 answer
+    await pc.setRemoteDescription(new RTCSessionDescription(offer))
+    console.log('✅ 远程描述已设置')
+    
+    const answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+    console.log('✅ 本地描述已设置')
+
+    wsSend('webrtc-answer', {
+      targetId: teacherId,
+      answer: {
+        type: answer.type,
+        sdp: answer.sdp
+      }
+    })
+    console.log('📤 发送 WebRTC answer 给老师')
+  } catch (error) {
+    console.error('❌ WebRTC 错误:', error)
+  }
+}
+
+// WebRTC: 老师处理 answer
+const handleWebRTCAnswer = async (studentId: string, answer: RTCSessionDescriptionInit) => {
+  const pc = peerConnections.value.get(studentId)
+  if (pc) {
+    await pc.setRemoteDescription(new RTCSessionDescription(answer))
+    console.log('✅ WebRTC 连接建立成功:', studentId)
+  }
+}
+
+// WebRTC: 处理 ICE candidate
+const handleICECandidate = async (peerId: string, candidate: RTCIceCandidateInit) => {
+  const pc = peerConnections.value.get(peerId)
+  if (pc) {
+    await pc.addIceCandidate(new RTCIceCandidate(candidate))
+  }
+}
+
 // 白板绘图
 const onWhiteboardDraw = (data: any) => {
-  // TODO: 通过 WebSocket 发送给其他用户
-  console.log('白板绘图:', data)
+  wsSend('whiteboard-draw', data)
 }
 
 const onWhiteboardClear = () => {
-  // TODO: 通过 WebSocket 发送清空命令
-  console.log('白板清空')
+  wsSend('whiteboard-clear', {})
 }
 
 // 聊天消息
 const sendChatMessage = (content: string) => {
+  // 本地先显示
   chatMessages.value.push({
     from: odid.value,
     fromName: userName,
@@ -415,7 +736,8 @@ const sendChatMessage = (content: string) => {
     time: new Date(),
     isTeacher: isTeacher.value
   })
-  // TODO: 通过 WebSocket 发送给其他用户
+  // 发送到服务器
+  wsSend('chat-message', { content })
 }
 
 // 学生监控
@@ -423,7 +745,7 @@ const lockStudent = (studentId: string) => {
   const student = studentsList.value.find(s => s.id === studentId)
   if (student) {
     student.isLocked = true
-    // TODO: 通过 WebSocket 发送锁定命令
+    wsSend('lock-screen', { targetStudentId: studentId })
   }
 }
 
@@ -431,18 +753,18 @@ const unlockStudent = (studentId: string) => {
   const student = studentsList.value.find(s => s.id === studentId)
   if (student) {
     student.isLocked = false
-    // TODO: 通过 WebSocket 发送解锁命令
+    wsSend('unlock-screen', { targetStudentId: studentId })
   }
 }
 
 const lockAllStudents = () => {
   studentsList.value.forEach(s => s.isLocked = true)
-  // TODO: 通过 WebSocket 发送锁定命令
+  wsSend('lock-screen', {})
 }
 
 const unlockAllStudents = () => {
   studentsList.value.forEach(s => s.isLocked = false)
-  // TODO: 通过 WebSocket 发送解锁命令
+  wsSend('unlock-screen', {})
 }
 
 // 获取参与者信息
@@ -460,21 +782,21 @@ const getParticipantRole = (odid: string): 'teacher' | 'student' => {
 const handleVisibilityChange = () => {
   if (document.hidden) {
     console.log('学生离开了页面')
-    // TODO: 通过 WebSocket 上报
+    wsSend('focus-status', { isFocused: false })
   } else {
     console.log('学生回到了页面')
-    // TODO: 通过 WebSocket 上报
+    wsSend('focus-status', { isFocused: true })
   }
 }
 
 const handleWindowBlur = () => {
   console.log('窗口失去焦点')
-  // TODO: 通过 WebSocket 上报
+  wsSend('focus-status', { isFocused: false })
 }
 
 const handleWindowFocus = () => {
   console.log('窗口获得焦点')
-  // TODO: 通过 WebSocket 上报
+  wsSend('focus-status', { isFocused: true })
 }
 
 // 离开教室

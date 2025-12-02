@@ -64,9 +64,16 @@ const videoRef = ref<HTMLVideoElement | null>(null)
 const hasVideo = ref(false)
 
 watch(() => props.stream, (newStream) => {
+  console.log('🎬 VideoPlayer: stream 变化', newStream)
   if (videoRef.value && newStream) {
     videoRef.value.srcObject = newStream
-    hasVideo.value = newStream.getVideoTracks().length > 0
+    // 直接设置为 true，因为远程流的 track 可能还没准备好
+    hasVideo.value = true
+    
+    // 确保视频播放
+    videoRef.value.play().catch(e => {
+      console.log('视频自动播放失败，需要用户交互:', e)
+    })
   } else {
     hasVideo.value = false
   }
@@ -75,7 +82,10 @@ watch(() => props.stream, (newStream) => {
 onMounted(() => {
   if (videoRef.value && props.stream) {
     videoRef.value.srcObject = props.stream
-    hasVideo.value = props.stream.getVideoTracks().length > 0
+    hasVideo.value = true
+    videoRef.value.play().catch(e => {
+      console.log('视频自动播放失败:', e)
+    })
   }
 })
 </script>

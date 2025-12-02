@@ -48,7 +48,7 @@
                 :class="student.isFocused ? 'text-green-400' : 'text-red-400'"
               >
                 <span class="w-2 h-2 rounded-full" :class="student.isFocused ? 'bg-green-400' : 'bg-red-400 animate-pulse'"></span>
-                {{ student.isFocused ? '专注中' : '已离开' }}
+                {{ student.isFocused ? '专注中' : '未聚焦' }}
               </span>
               <span v-if="student.isLocked" class="text-yellow-400 flex items-center gap-1">
                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
