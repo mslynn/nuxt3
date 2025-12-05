@@ -72,6 +72,12 @@
 
         <div class="w-px h-8 bg-slate-700 mx-2"></div>
 
+        <!-- 课件选择器（仅老师） -->
+        <CoursewareSelector
+          v-if="isTeacher"
+          @select="handleCoursewareSelect"
+        />
+
         <!-- 视图切换 -->
         <div class="flex bg-slate-700 rounded-lg p-1">
           <button
@@ -82,6 +88,15 @@
             ]"
           >
             白板
+          </button>
+          <button
+            @click="currentView = 'courseware'"
+            :class="[
+              'px-3 py-1 text-sm rounded-md transition-colors',
+              currentView === 'courseware' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-white'
+            ]"
+          >
+            课件
           </button>
           <button
             @click="currentView = 'screen'"
@@ -123,6 +138,29 @@
             @draw="onWhiteboardDraw"
             @clear="onWhiteboardClear"
           />
+
+          <!-- 课件视图 -->
+          <div v-show="currentView === 'courseware'" class="w-full h-full">
+            <!-- 有课件时显示 -->
+            <CoursewareViewer
+              v-if="activeCourseware"
+              :courseware="activeCourseware"
+              :current-index="coursewarePageIndex"
+              :readonly="!isTeacher"
+              :show-back="isTeacher"
+              @page-change="changeCoursewarePage"
+              @back="closeCoursewareInRoom"
+            />
+
+            <!-- 无课件时 -->
+            <div v-else class="h-full flex flex-col items-center justify-center text-slate-500 bg-slate-800">
+              <svg class="w-24 h-24 mb-4 opacity-30" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+              </svg>
+              <p v-if="isTeacher" class="text-lg mb-4">点击上方"课件"按钮选择课件</p>
+              <p v-else class="text-lg">等待老师打开课件...</p>
+            </div>
+          </div>
 
           <!-- 屏幕共享视图 -->
           <div v-show="currentView === 'screen'" class="w-full h-full flex items-center justify-center">
@@ -268,9 +306,14 @@ const ws = ref<WebSocket | null>(null)
 
 // 状态
 const isConnected = ref(false)
-const currentView = ref<'whiteboard' | 'screen'>('whiteboard')
+const currentView = ref<'whiteboard' | 'courseware' | 'screen'>('whiteboard')
 const rightPanel = ref<'chat' | 'monitor'>('chat')
 const odid = ref(Math.random().toString(36).substring(2, 15))
+
+// 课件相关
+import type { Courseware } from '~/composables/useCourseware'
+const activeCourseware = ref<Courseware | null>(null)
+const coursewarePageIndex = ref(0)
 
 // 媒体流
 const localStream = ref<MediaStream | null>(null)
@@ -438,6 +481,34 @@ const handleWsMessage = (event: MessageEvent) => {
         // 收到 ICE candidate
         console.log('🔗 收到 ICE candidate')
         handleICECandidate(payload.from, payload.candidate)
+        break
+
+      // 课件同步
+      case 'courseware-open':
+        // 学生端收到课件打开通知
+        if (!isTeacher.value) {
+          console.log('📚 收到课件打开通知:', payload.courseware?.title)
+          activeCourseware.value = payload.courseware
+          coursewarePageIndex.value = 0
+          currentView.value = 'courseware'
+        }
+        break
+
+      case 'courseware-page':
+        // 学生端收到课件翻页通知
+        if (!isTeacher.value) {
+          console.log('📚 收到课件翻页通知:', payload.pageIndex)
+          coursewarePageIndex.value = payload.pageIndex
+        }
+        break
+
+      case 'courseware-close':
+        // 学生端收到课件关闭通知
+        if (!isTeacher.value) {
+          console.log('📚 收到课件关闭通知')
+          activeCourseware.value = null
+          coursewarePageIndex.value = 0
+        }
         break
     }
   } catch (e) {
@@ -740,6 +811,49 @@ const onWhiteboardDraw = (data: any) => {
 
 const onWhiteboardClear = () => {
   wsSend('whiteboard-clear', {})
+}
+
+// 课件操作
+const handleCoursewareSelect = (courseware: Courseware) => {
+  activeCourseware.value = courseware
+  coursewarePageIndex.value = 0
+  currentView.value = 'courseware'
+  
+  // 通知学生打开课件
+  wsSend('courseware-open', { courseware })
+  console.log('📚 老师打开课件:', courseware.title)
+}
+
+const changeCoursewarePage = (index: number) => {
+  if (!activeCourseware.value) return
+  if (index < 0 || index >= activeCourseware.value.pages.length) return
+  
+  coursewarePageIndex.value = index
+  
+  // 通知学生翻页
+  wsSend('courseware-page', { pageIndex: index })
+  console.log('📚 老师翻页到:', index + 1)
+}
+
+const prevCoursewarePage = () => {
+  if (coursewarePageIndex.value > 0) {
+    changeCoursewarePage(coursewarePageIndex.value - 1)
+  }
+}
+
+const nextCoursewarePage = () => {
+  if (activeCourseware.value && coursewarePageIndex.value < activeCourseware.value.pages.length - 1) {
+    changeCoursewarePage(coursewarePageIndex.value + 1)
+  }
+}
+
+const closeCoursewareInRoom = () => {
+  activeCourseware.value = null
+  coursewarePageIndex.value = 0
+  
+  // 通知学生关闭课件
+  wsSend('courseware-close', {})
+  console.log('📚 老师关闭课件')
 }
 
 // 聊天消息

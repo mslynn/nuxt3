@@ -198,6 +198,40 @@ function handleMessage(ws, data) {
       })
       break
 
+    // 课件同步
+    case 'courseware-open':
+      // 老师打开课件，通知所有学生
+      console.log(`📚 ${user.name} 打开课件: ${payload.courseware?.title}`)
+      broadcastToStudents(user.roomId, {
+        type: 'courseware-open',
+        payload: {
+          from: user.odid,
+          courseware: payload.courseware
+        }
+      })
+      break
+
+    case 'courseware-page':
+      // 老师翻页，通知所有学生
+      console.log(`📚 ${user.name} 课件翻页到: ${payload.pageIndex + 1}`)
+      broadcastToStudents(user.roomId, {
+        type: 'courseware-page',
+        payload: {
+          from: user.odid,
+          pageIndex: payload.pageIndex
+        }
+      })
+      break
+
+    case 'courseware-close':
+      // 老师关闭课件，通知所有学生
+      console.log(`📚 ${user.name} 关闭课件`)
+      broadcastToStudents(user.roomId, {
+        type: 'courseware-close',
+        payload: { from: user.odid }
+      })
+      break
+
     default:
       console.log('未知消息类型:', type)
   }

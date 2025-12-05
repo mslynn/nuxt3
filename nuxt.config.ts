@@ -31,7 +31,11 @@ export default defineNuxtConfig({
     pageTransition: { name: 'page', mode: 'out-in' }
   },
 
-  css: ['~/assets/css/main.css'],
+  css: [
+    '~/assets/css/main.css',
+    'reveal.js/dist/reveal.css',
+    'reveal.js/dist/theme/white.css'
+  ],
 
   devServer: {
     host: '127.0.0.1',
