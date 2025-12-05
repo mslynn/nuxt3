@@ -344,6 +344,12 @@ const handleWsMessage = (event: MessageEvent) => {
       case 'user-joined':
         participants.value.push(payload.user)
         updateStudentsList()
+        
+        // 如果老师正在屏幕共享，为新加入的学生创建 WebRTC 连接
+        if (isTeacher.value && isScreenSharing.value && screenShareStream.value && payload.user.role === 'student') {
+          console.log('📺 新学生加入，为其创建 WebRTC 连接:', payload.user.name)
+          createOfferForStudent(payload.user.id, screenShareStream.value)
+        }
         break
 
       case 'user-left':
@@ -488,7 +494,7 @@ onMounted(async () => {
     console.error('WebSocket 连接失败:', error)
   }
 
-  // 尝试获取媒体流
+  // 尝试获取媒体流（摄像头/麦克风）
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: true,
@@ -498,7 +504,10 @@ onMounted(async () => {
     isCameraOn.value = true
     isMicOn.value = true
   } catch (error) {
-    console.error('获取媒体设备失败:', error)
+    // 没有摄像头/麦克风，不影响屏幕共享功能
+    console.warn('⚠️ 未检测到摄像头/麦克风，将使用默认头像')
+    isCameraOn.value = false
+    isMicOn.value = false
   }
 
   // 监听页面焦点变化（学生端）- 暂时禁用调试
@@ -589,6 +598,12 @@ const toggleScreenShare = async () => {
 
       // 为每个学生创建 WebRTC 连接
       const students = participants.value.filter(p => p.role === 'student')
+      console.log('👥 当前学生列表:', students)
+      
+      if (students.length === 0) {
+        console.warn('⚠️ 没有找到学生，无法创建 WebRTC 连接')
+      }
+      
       for (const student of students) {
         await createOfferForStudent(student.id, stream)
       }
